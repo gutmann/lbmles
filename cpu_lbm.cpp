@@ -9,18 +9,17 @@ Last modified on: Thursday, July 18 2013 @12:08 pm
 
 Build instructions: make (uses Makefile present in this folder)
 
-Run instructions: ./gpu_lbm
+Run instructions: ./cpu_lbm
 
 */
 
 #include<iostream>
 #include<stdio.h>
-#include<arrayfire.h>
-using namespace af;
-
+#include<math.h>
 // problem parameters
 
 const int     N = 128;                  // number of node points along X and Y (cavity length in lattice units)
+const int     half_N = 64;              // half way point in X and Y
 const int     TIME_STEPS = 1000000;     // number of time steps for which the simulation is run
 const double  REYNOLDS_NUMBER = 1E6;    // REYNOLDS_NUMBER = LID_VELOCITY * N / kinematicViscosity
 
@@ -30,11 +29,11 @@ const int     Q = 9;                    // number of discrete velocity aections 
 const double  DENSITY = 2.7;            // fluid density in lattice units
 const double  LID_VELOCITY = 0.05;      // lid velocity in lattice units
 
-// D2Q9 parameters 
+// D2Q9 parameters
 
-// populate D3Q19 parameters and copy them to __constant__ memory on the GPU
+// populate D2Q9 parameters
 
-void D3Q9(double *ex, double *ey, int *oppos, double *wt)
+void D2Q9(double *ex, double *ey, int *oppos, double *wt)
 {
     // D2Q9 model base velocities and weights
 
@@ -61,11 +60,11 @@ void D3Q9(double *ex, double *ey, int *oppos, double *wt)
     oppos[8] = 6;      //      7        4        8
 }
 
-// initialize values for aection vectors, density, velocity and distribution functions on the GPU
+// initialize values for aection vectors, density, velocity and distribution functions
 
-void initialize(const int N, const int Q, const double DENSITY, const double LID_VELOCITY, 
+void initialize(const int N, const int Q, const double DENSITY, const double LID_VELOCITY,
                 double *ex, double *ey, int *oppos, double *wt,
-                double *rho, double *ux, double *uy, double* sigma, 
+                double *rho, double *ux, double *uy, double* sigma,
                 double *f, double *feq, double *f_new)
 {
     // loop over all voxels
@@ -91,7 +90,7 @@ void initialize(const int N, const int Q, const double DENSITY, const double LID
             // along various aections using equilibriu, functions
 
             for(int a=0;a<Q;a++) {
-        
+
                 int index_f = a + index*Q;
 
                 double edotu = ex[a]*ux[index] + ey[a]*uy[index];
@@ -156,7 +155,7 @@ void collideAndStream(// READ-ONLY parameters (used by this function but not cha
 
         C_Smagorinsky = 0.16;
 
-        // tau_t = additional contribution to the relaxation time 
+        // tau_t = additional contribution to the relaxation time
         //         because of the "eddy viscosity" model
         // =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
         // REFERENCE: Krafczyk M., Tolke J. and Luo L.-S. (2003)
@@ -268,89 +267,61 @@ void everythingElse( // READ-ONLY parameters (used by this function but not chan
 
 int main(int argc, char* argv[])
 {
-    try {
 
-        // check whether to do graphics stuff or not
-        bool isconsole = (argc == 2 && argv[1][0] == '-');
+    // check whether to do graphics stuff or not
+    bool isconsole = (argc == 2 && argv[1][0] == '-');
 
-        // allocate memory
+    // allocate memory
 
-        // distribution functions
-        double *f = new double[N*N*Q];
-        double *feq = new double[N*N*Q];
-        double *f_new = new double[N*N*Q];
+    // distribution functions
+    double *f = new double[N*N*Q];
+    double *feq = new double[N*N*Q];
+    double *f_new = new double[N*N*Q];
 
-        // density and velocity
-        double *rho = new double[N*N];
-        double *ux = new double[N*N];
-        double *uy = new double[N*N];
+    // density and velocity
+    double *rho = new double[N*N];
+    double *ux = new double[N*N];
+    double *uy = new double[N*N];
 
-        // rate-of-strain
-        double *sigma = new double[N*N];
+    // rate-of-strain
+    double *sigma = new double[N*N];
 
-        // D3Q9 parameters
-        double *ex = new double[Q];
-        double *ey = new double[Q];
-        int *oppos = new int[Q];
-        double *wt = new double[Q];
+    // D2Q9 parameters
+    double *ex = new double[Q];
+    double *ey = new double[Q];
+    int *oppos = new int[Q];
+    double *wt = new double[Q];
 
-        // fill D3Q9 parameters in constant memory on the GPU
-        D3Q9(ex, ey, oppos, wt);
+    // fill D2Q9 parameters
+    D2Q9(ex, ey, oppos, wt);
 
-        // launch GPU kernel to initialize all fields
-        initialize(N, Q, DENSITY, LID_VELOCITY, ex, ey, oppos, wt, rho, ux, uy, sigma, f, feq, f_new);
+    // initialize all fields
+    initialize(N, Q, DENSITY, LID_VELOCITY, ex, ey, oppos, wt, rho, ux, uy, sigma, f, feq, f_new);
 
-        // time integration
-        int time=0;
-        while(time<TIME_STEPS) {
+    // time integration
+    int time=0;
+    while(time<TIME_STEPS) {
 
-            time++;
+        time++;
 
-            std::cout << "Time = " << time << std::endl;
+        collideAndStream(N, Q, DENSITY, LID_VELOCITY, REYNOLDS_NUMBER, ex, ey, oppos, wt, rho, ux, uy, sigma, f, feq, f_new);
 
-            collideAndStream(N, Q, DENSITY, LID_VELOCITY, REYNOLDS_NUMBER, ex, ey, oppos, wt, rho, ux, uy, sigma, f, feq, f_new);
+        // collideAndStream and everythingElse were originally one kernel
+        // they were separated out to make all threads synchronize globally
+        // before moving on to the next set of calculations
 
-            // collideAndStream and everythingElse were originally one kernel
-            // they were separated out to make all threads synchronize globally
-            // before moving on to the next set of calculations
+        everythingElse(N, Q, DENSITY, LID_VELOCITY, REYNOLDS_NUMBER, ex, ey, oppos, wt, rho, ux, uy, sigma, f, feq, f_new);
 
-            everythingElse(N, Q, DENSITY, LID_VELOCITY, REYNOLDS_NUMBER, ex, ey, oppos, wt, rho, ux, uy, sigma, f, feq, f_new);
 
-            // this is where ArrayFire is currently used
-            // the cool thing is you don't need to move the GPU arrays back to the
-            // CPU for visualizing them. And of course, we have in-situ graphics
+//      double curl_min = 0, curl_max = 0;
 
-    //      double curl_min = 0, curl_max = 0;
-
-            if (time % 10 == 0) {
-                if(!isconsole) {
-                    array U(N,N,ux,afHost);
-                    array V(N,N,uy,afHost);
-                    array umag = pow(U*U + V*V, 0.5);
-
-//                  array dUdx,dUdy,dVdx,dVdy;
-//                  grad(dUdx,dUdy,U);
-//                  grad(dVdx,dVdy,V);
-//                  array curl = dVdx - dUdy;
-
-//                  double2 extrema = minmax<double2>(curl);
-//                  std::cout << "Curl --- min " << extrema.x << "  max " << extrema.y << std::endl;
-
-//                  if (extrema.x < curl_min) curl_min = extrema.x;
-//                  if (extrema.y > curl_max) curl_max = extrema.y;
-
-//                  curl(0) = -0.1;
-//                  curl(N) = +0.1;
-                    fig("color","heat");
-                    image(umag);
-                }
-            }
-    
+        if (time % 10 == 0) {
+            std::cout << "Time = " << time << "  " << feq[half_N*(N+1)] << std::endl;
+        //     if(!isconsole) {
+        // print something
+        //     }
         }
 
-    } catch (af::exception& e) {
-        fprintf(stderr, "%s\n", e.what());
-        throw;
     }
 
     return 0;

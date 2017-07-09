@@ -1,5 +1,8 @@
-AF_PATH=/home/abhijit/jacket/arrayfire
-BIN := gpu_lbm cpu_lbm af_lbm shift
-include $(AF_PATH)/examples/common.mk
-CFLAGS += -arch=sm_21 --ptxas-options=-v
-LDFLAGS += -lafGFX
+# BIN := gpu_lbm cpu_lbm af_lbm shift
+
+# CFLAGS += -arch=sm_21 --ptxas-options=-v
+# LDFLAGS += -lafGFX
+LDFLAGS=-lm
+
+cpu_lbm: cpu_lbm.cpp
+	${CC} $^ $(LDFLAGS) -o $@
